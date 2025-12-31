@@ -6,6 +6,8 @@ use config::{Config, File};
 use directories::ProjectDirs;
 use tracing::{debug, info};
 
+mod jira;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -61,6 +63,16 @@ async fn main() -> Result<()> {
     let settings = config.try_deserialize::<Settings>()?;
 
     info!("Jira Base: {}, User: {}", settings.base_url, settings.user);
+
+    let jira = jira::Jira::new(
+        settings.base_url,
+        Some((settings.user, settings.token)),
+    );
+
+    let attachments = jira.fetch_attachments(&args.issue).await?;
+    for att in attachments {
+        info!("Attachment: {} \"{}\" ({} bytes) - {}", att.id, att.filename, att.size, att.content);
+    }
 
     Ok(())
 }
