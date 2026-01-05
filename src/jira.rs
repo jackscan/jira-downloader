@@ -20,9 +20,9 @@ struct Fields {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Attachment {
-    pub id: String,
     pub filename: String,
     pub size: u64,
+    pub created: String,
     pub content: String,
 }
 

@@ -6,6 +6,7 @@ use config::{Config, File};
 use directories::ProjectDirs;
 use tracing::{debug, info};
 
+mod app;
 mod jira;
 
 #[derive(Parser, Debug)]
@@ -17,7 +18,7 @@ struct Args {
     /// Issue key to download
     #[arg(value_name = "ISSUE")]
     issue: String,
-    /// Log level (overrides config)
+    /// Log level (error, warn, info, debug, trace)
     #[arg(short, long, default_value = "info")]
     loglevel: tracing::Level,
 }
@@ -46,9 +47,9 @@ async fn main() -> Result<()> {
         debug!("Loading config from {config_path:?}");
         // Load config from specified location
         config_builder.add_source(File::from(config_path))
-    } else if let Some(config_path) =
-        args.config.or(ProjectDirs::from("", "", "jira-downloader")
-            .map(|pdir| pdir.config_dir().join("config")))
+    } else if let Some(config_path) = args
+        .config
+        .or(project_directory().map(|pdir| pdir.config_dir().join("config")))
     {
         // Load config from default location if it exists
         debug!("Looking for config at {config_path:?}");
@@ -64,15 +65,24 @@ async fn main() -> Result<()> {
 
     info!("Jira Base: {}, User: {}", settings.base_url, settings.user);
 
-    let jira = jira::Jira::new(
-        settings.base_url,
-        Some((settings.user, settings.token)),
-    );
+    let jira = jira::Jira::new(settings.base_url, Some((settings.user, settings.token)));
 
     let attachments = jira.fetch_attachments(&args.issue).await?;
-    for att in attachments {
-        info!("Attachment: {} \"{}\" ({} bytes) - {}", att.id, att.filename, att.size, att.content);
+    for att in &attachments {
+        info!(
+            "Attachment: \"{}\" ({} bytes) - {}",
+            att.filename, att.size, att.created
+        );
     }
 
+    let mut app = app::App::new(args.issue.into(), attachments);
+    let mut terminal = ratatui::init();
+    app.run(&mut terminal).await?;
+    ratatui::restore();
+
     Ok(())
+}
+
+fn project_directory() -> Option<ProjectDirs> {
+    ProjectDirs::from("", "", env!("CARGO_PKG_NAME"))
 }
