@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env::current_dir, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -35,8 +35,16 @@ struct Settings {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    let logfolder = project_directory()
+        .map(|pdir| pdir.data_dir().to_path_buf())
+        .unwrap_or_else(|| current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let logfile =
+        tracing_appender::rolling::daily(logfolder, format!("{}.log", env!("CARGO_PKG_NAME")));
+
     tracing_subscriber::fmt()
         .with_max_level(args.loglevel)
+        .with_writer(logfile)
         .init();
 
     let config_builder = Config::builder();
@@ -75,7 +83,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    let mut app = app::App::new(args.issue.into(), attachments);
+    let mut app = app::App::new(jira, args.issue.clone(), args.issue.into(), attachments);
     let mut terminal = ratatui::init();
     app.run(&mut terminal).await?;
     ratatui::restore();
