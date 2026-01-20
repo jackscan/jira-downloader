@@ -26,9 +26,8 @@ struct Args {
 #[derive(Debug, serde::Deserialize)]
 struct Settings {
     base_url: String,
-    user: String,
-    #[allow(dead_code)]
-    token: String,
+    user: Option<String>,
+    token: Option<String>,
 }
 
 #[tokio::main]
@@ -71,9 +70,20 @@ async fn main() -> Result<()> {
         .build()?;
     let settings = config.try_deserialize::<Settings>()?;
 
-    info!("Jira Base: {}, User: {}", settings.base_url, settings.user);
+    let (authdesc, authmethod) = match (&settings.user, &settings.token) {
+        (Some(user), token) => (format!("Basic: {}", user), jira::Auth::Basic {
+            username: user.clone(),
+            password: token.clone(),
+        }),
+        (None, Some(token)) => ("Bearer token".to_string(), jira::Auth::Bearer {
+            token: token.clone(),
+        }),
+        (None, None) => ("Anonymous access".to_string(), jira::Auth::None),
+    };
 
-    let jira = jira::Jira::new(settings.base_url, Some((settings.user, settings.token)));
+    info!("Jira Base: {}, Auth: {}", settings.base_url, authdesc);
+
+    let jira = jira::Jira::new(settings.base_url, authmethod);
 
     let attachments = jira.fetch_attachments(&args.issue).await?;
     for att in &attachments {

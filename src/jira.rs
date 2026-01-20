@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::stream::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, IntoUrl};
 use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, sync::watch::Sender};
 
@@ -8,7 +8,14 @@ use tokio::{io::AsyncWriteExt, sync::watch::Sender};
 pub struct Jira {
     client: Client,
     base_url: String,
-    auth: Option<(String, String)>,
+    auth: Auth,
+}
+
+#[derive(Debug, Clone)]
+pub enum Auth {
+    None,
+    Basic { username: String, password: Option<String> },
+    Bearer { token: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,11 +45,24 @@ pub enum DownloadEvent {
 }
 
 impl Jira {
-    pub fn new(base_url: String, auth: Option<(String, String)>) -> Self {
+    pub fn new(base_url: String, auth: Auth) -> Self {
         Self {
             client: Client::new(),
             base_url,
             auth,
+        }
+    }
+
+    fn request(&self, url: impl IntoUrl) -> reqwest::RequestBuilder {
+        let req = self.client.get(url);
+        match &self.auth {
+            Auth::Basic { username, password } => {
+                req.basic_auth(username, password.clone())
+            }
+            Auth::Bearer { token } => {
+                req.bearer_auth(token)
+            }
+            Auth::None => req,
         }
     }
 
@@ -52,10 +72,7 @@ impl Jira {
             self.base_url.trim_end_matches('/'),
             issue
         );
-        let mut req = self.client.get(&url);
-        if let Some((user, token)) = &self.auth {
-            req = req.basic_auth(user, Some(token));
-        }
+        let req = self.request(&url);
         let res = req.send().await?;
         if !res.status().is_success() {
             return Err(anyhow::anyhow!("Failed to fetch issue: {}", res.status()));
@@ -70,10 +87,7 @@ impl Jira {
         mut file: tokio::fs::File,
         tx: Sender<DownloadEvent>,
     ) -> Result<()> {
-        let mut req = self.client.get(&url);
-        if let Some((user, token)) = &self.auth {
-            req = req.basic_auth(user, Some(token));
-        }
+        let req = self.request(&url);
         let resp = req.send().await?;
         if !resp.status().is_success() {
             return Err(anyhow::anyhow!("HTTP error: {}", resp.status()));
