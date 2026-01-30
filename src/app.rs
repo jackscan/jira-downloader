@@ -1,6 +1,6 @@
 use crate::jira;
 use crossterm::event::KeyEventKind;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, TryFutureExt};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Rect},
@@ -428,8 +428,21 @@ async fn download_attachment(
     tx: tokio::sync::watch::Sender<jira::DownloadEvent>,
 ) -> anyhow::Result<()> {
     let (tmp_file, tmp_file_path) = create_tmp_download_file(&file_path).await?;
-    jira.download_attachment(url, tmp_file, tx).await?;
-    tokio::fs::rename(tmp_file_path, file_path).await?;
+    let tmp_path_to_remove = tmp_file_path.clone();
+
+    if let Err(e) = jira
+        .download_attachment(url, tmp_file, tx)
+        .and_then(|()| async move {
+            tokio::fs::rename(&tmp_file_path, file_path)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    {
+        let _ = tokio::fs::remove_file(&tmp_path_to_remove).await;
+        return Err(e);
+    }
+
     Ok(())
 }
 
