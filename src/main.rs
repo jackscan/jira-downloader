@@ -87,9 +87,10 @@ async fn main() -> Result<()> {
 
     let attachments = jira.fetch_attachments(&args.issue).await?;
     for att in &attachments {
+        let formatted_size = app::format_file_size(att.size as usize);
         info!(
-            "Attachment: \"{}\" ({} bytes) - {}",
-            att.filename, att.size, att.created
+            "Attachment: \"{}\" ({}) - {}",
+            att.filename, formatted_size, att.created
         );
     }
 
