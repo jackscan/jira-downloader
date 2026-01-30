@@ -70,6 +70,7 @@ async fn main() -> Result<()> {
         .build()?;
     let settings = config.try_deserialize::<Settings>()?;
 
+    // Determine authentication method
     let (authdesc, authmethod) = match (&settings.user, &settings.token) {
         (Some(user), token) => (format!("Basic: {}", user), jira::Auth::Basic {
             username: user.clone(),

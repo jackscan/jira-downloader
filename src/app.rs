@@ -12,6 +12,7 @@ use tokio::sync::watch;
 use tracing::{debug, error, info};
 use unicode_width::UnicodeWidthStr;
 
+/// The main application state and logic.
 #[derive(Debug)]
 pub struct App {
     issue: String,
@@ -40,16 +41,23 @@ struct Attachment {
     content: String,
 }
 
+/// The state of an attachment in the download process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttachmentState {
+    /// The attachment has not been downloaded yet.
     NotDownloaded,
+    /// The attachment is queued for download.
     Queued,
+    /// The attachment is currently being downloaded.
     Downloading { downloaded: u64, total: Option<u64> },
+    /// The attachment has been downloaded.
     Downloaded,
+    /// The attachment failed to download.
     Failed { errmsg: String },
 }
 
 impl App {
+    /// Creates a new App instance.
     pub fn new(
         jira: crate::jira::Jira,
         issue: String,
@@ -96,6 +104,7 @@ impl App {
         }
     }
 
+    /// Runs the main application loop.
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         if let Err(err) = tokio::fs::create_dir_all(&self.folder).await {
             return Err(anyhow::anyhow!(
@@ -116,6 +125,7 @@ impl App {
             };
         }
 
+        // Main loop
         while !self.exit {
             let min_delay = tokio::time::sleep(std::time::Duration::from_millis(20));
 
