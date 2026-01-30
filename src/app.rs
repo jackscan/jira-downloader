@@ -451,7 +451,7 @@ impl From<crate::jira::Attachment> for Attachment {
         Self {
             filename: att.filename,
             size: att.size as usize,
-            created: chrono::DateTime::parse_from_rfc3339(&att.created)
+            created: chrono::DateTime::parse_from_str(&att.created, "%Y-%m-%dT%H:%M:%S%.3f%z")
                 .map(|dt| {
                     dt.with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M")
