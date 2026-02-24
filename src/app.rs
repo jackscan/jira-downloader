@@ -126,6 +126,7 @@ impl App {
         }
 
         // Main loop
+        let mut evt_reader = crossterm::event::EventStream::new();
         while !self.exit {
             let min_delay = tokio::time::sleep(std::time::Duration::from_millis(20));
 
@@ -134,7 +135,6 @@ impl App {
                 self.draw(frame);
             })?;
 
-            let mut evt_reader = crossterm::event::EventStream::new();
             let progress_fut =
                 self.download_ctrl
                     .as_mut()
@@ -148,16 +148,14 @@ impl App {
                                     },
                                 )
                             } else {
-                                (ctrl.attachment_index, ctrl.progress_rx.borrow().clone())
+                                (ctrl.attachment_index, ctrl.progress_rx.borrow_and_update().clone())
                             }
                         }
                         .boxed()
                     });
 
             tokio::select! {
-                (index, evt) = progress_fut => {
-                    self.update_download(index, evt);
-                }
+                biased;
                 maybe_evt = evt_reader.next() => {
                     match maybe_evt {
                         Some(Ok(evt)) => match evt {
@@ -173,6 +171,9 @@ impl App {
                         }
                         None => {}
                     }
+                }
+                (index, evt) = progress_fut => {
+                    self.update_download(index, evt);
                 }
             }
 
