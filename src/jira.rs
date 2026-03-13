@@ -20,7 +20,10 @@ pub enum Auth {
     /// No authentication.
     None,
     /// Basic authentication with username and optional password.
-    Basic { username: String, password: Option<String> },
+    Basic {
+        username: String,
+        password: Option<String>,
+    },
     /// Bearer token authentication.
     Bearer { token: String },
 }
@@ -79,12 +82,8 @@ impl Jira {
     fn request(&self, url: impl IntoUrl) -> reqwest::RequestBuilder {
         let req = self.client.get(url);
         match &self.auth {
-            Auth::Basic { username, password } => {
-                req.basic_auth(username, password.clone())
-            }
-            Auth::Bearer { token } => {
-                req.bearer_auth(token)
-            }
+            Auth::Basic { username, password } => req.basic_auth(username, password.clone()),
+            Auth::Bearer { token } => req.bearer_auth(token),
             Auth::None => req,
         }
     }
