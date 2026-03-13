@@ -1,10 +1,10 @@
-use crate::jira;
-use crossterm::event::KeyEventKind;
+use crate::{filter, jira};
+use crossterm::event::{KeyCode, KeyEventKind};
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, TableState},
 };
 use std::path::PathBuf;
@@ -24,6 +24,8 @@ pub struct App {
     exit: bool,
     download_ctrl: Option<DownloadCtrl>,
     status_message: Option<String>,
+    status_feedback: Option<String>,
+    filter_input: filter::FilterInputState,
 }
 
 #[derive(Debug)]
@@ -101,6 +103,8 @@ impl App {
             exit: false,
             download_ctrl: None,
             status_message: None,
+            status_feedback: None,
+            filter_input: filter::FilterInputState::default(),
         }
     }
 
@@ -130,7 +134,7 @@ impl App {
         while !self.exit {
             let min_delay = tokio::time::sleep(std::time::Duration::from_millis(20));
 
-            self.update_status_message();
+            self.update_selected_status_message();
             terminal.draw(|frame| {
                 self.draw(frame);
             })?;
@@ -148,7 +152,10 @@ impl App {
                                     },
                                 )
                             } else {
-                                (ctrl.attachment_index, ctrl.progress_rx.borrow_and_update().clone())
+                                (
+                                    ctrl.attachment_index,
+                                    ctrl.progress_rx.borrow_and_update().clone(),
+                                )
                             }
                         }
                         .boxed()
@@ -184,34 +191,85 @@ impl App {
     }
 
     fn handle_key_press(&mut self, key_evt: crossterm::event::KeyEvent) {
+        if self.filter_input.is_active {
+            self.handle_filter_key_press(key_evt);
+        } else {
+            self.handle_table_key_press(key_evt);
+        }
+    }
+
+    fn handle_table_key_press(&mut self, key_evt: crossterm::event::KeyEvent) {
         match key_evt.code {
-            crossterm::event::KeyCode::Char('q') => {
+            KeyCode::Char('q') => {
                 self.exit = true;
             }
-            crossterm::event::KeyCode::Up => {
+            KeyCode::Up => {
                 self.previous_row();
             }
-            crossterm::event::KeyCode::Down => {
+            KeyCode::Down => {
                 self.next_row();
             }
-            crossterm::event::KeyCode::Char(' ') => {
+            KeyCode::Char(' ') => {
                 self.toggle_selection();
             }
-            crossterm::event::KeyCode::Enter => {
+            KeyCode::Enter => {
                 self.start_downloads();
             }
-            crossterm::event::KeyCode::Esc => {
+            KeyCode::Esc => {
                 self.table_state.select(None);
             }
-            crossterm::event::KeyCode::Tab => {
+            KeyCode::Tab => {
                 self.table_state
                     .select(self.table_state.selected().map_or(Some(0), |_| None));
+            }
+            KeyCode::Char('/') => {
+                self.activate_filter_input();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_filter_key_press(&mut self, key_evt: crossterm::event::KeyEvent) {
+        match key_evt.code {
+            KeyCode::Char(ch) => {
+                self.status_feedback = None;
+                self.filter_input
+                    .draft
+                    .insert(self.filter_input.cursor_index, ch);
+                self.filter_input.cursor_index += ch.len_utf8();
+                self.recompute_filter_preview();
+            }
+            KeyCode::Backspace => {
+                self.status_feedback = None;
+                if self.filter_input.cursor_index > 0 {
+                    let start = previous_char_boundary(
+                        &self.filter_input.draft,
+                        self.filter_input.cursor_index,
+                    );
+                    self.filter_input
+                        .draft
+                        .drain(start..self.filter_input.cursor_index);
+                    self.filter_input.cursor_index = start;
+                    self.recompute_filter_preview();
+                }
+            }
+            KeyCode::Enter => {
+                self.status_feedback = None;
+                self.apply_filter_confirm();
+            }
+            KeyCode::Esc => {
+                self.status_feedback = None;
+                self.filter_input.cancel();
             }
             _ => {}
         }
     }
 
     fn next_row(&mut self) {
+        if self.attachments.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
         self.table_state.select(Some(
             self.table_state
                 .selected()
@@ -242,7 +300,7 @@ impl App {
         }
     }
 
-    fn update_status_message(&mut self) {
+    fn update_selected_status_message(&mut self) {
         if let Some(i) = self.table_state.selected() {
             let att = &self.attachments[i];
             self.status_message = match &att.state {
@@ -275,7 +333,82 @@ impl App {
                     att.filename, errmsg
                 )),
             };
+        } else {
+            self.status_message = None;
         }
+    }
+
+    fn activate_filter_input(&mut self) {
+        self.filter_input.activate();
+        self.recompute_filter_preview();
+    }
+
+    fn recompute_filter_preview(&mut self) {
+        let pattern = filter::FilterPattern::from_input(&self.filter_input.draft);
+        match filter::matching_indices(
+            &pattern,
+            self.attachments.iter().map(|att| att.filename.as_str()),
+        ) {
+            Ok(indices) => {
+                self.filter_input.preview_matches = indices;
+                self.filter_input.compile_error = None;
+            }
+            Err(errmsg) => {
+                self.filter_input.preview_matches.clear();
+                self.filter_input.compile_error = Some(errmsg);
+            }
+        }
+    }
+
+    fn apply_filter_confirm(&mut self) {
+        let pattern = filter::FilterPattern::from_input(&self.filter_input.draft);
+        let pattern_text = pattern.raw.clone();
+
+        if matches!(pattern.kind, filter::PatternKind::Empty) {
+            self.status_feedback = Some(filter::empty_input_result().message);
+            self.filter_input.cancel();
+            return;
+        }
+
+        let matched_indices = match filter::matching_indices(
+            &pattern,
+            self.attachments.iter().map(|att| att.filename.as_str()),
+        ) {
+            Ok(indices) => indices,
+            Err(errmsg) => {
+                self.status_feedback =
+                    Some(filter::invalid_glob_result(&pattern_text, &errmsg).message);
+                self.filter_input.cancel();
+                return;
+            }
+        };
+
+        let mut eligible_total = 0usize;
+        let mut queued_total = 0usize;
+        let mut skipped_total = 0usize;
+
+        for index in matched_indices.iter().copied() {
+            if let Some(att) = self.attachments.get_mut(index) {
+                if filter::is_queue_eligible(queue_state_from_attachment(&att.state)) {
+                    eligible_total += 1;
+                    att.state = AttachmentState::Queued;
+                    queued_total += 1;
+                } else {
+                    skipped_total += 1;
+                }
+            }
+        }
+
+        let apply_result = filter::build_apply_result(
+            &pattern_text,
+            matched_indices.len(),
+            eligible_total,
+            queued_total,
+            skipped_total,
+        );
+
+        self.status_feedback = Some(apply_result.message);
+        self.filter_input.cancel();
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -296,13 +429,19 @@ impl App {
     }
 
     fn render_table(&mut self, frame: &mut Frame, area: Rect) {
-        let rows = self.attachments.iter().map(|att| {
-            ratatui::widgets::Row::new(vec![
+        let rows = self.attachments.iter().enumerate().map(|(index, att)| {
+            let mut row = ratatui::widgets::Row::new(vec![
                 ratatui::text::Line::from(att.state.to_string()).right_aligned(),
                 att.filename.clone().into(),
                 format_file_size(att.size).into(),
                 att.created.clone().into(),
-            ])
+            ]);
+
+            if self.filter_input.is_active && self.filter_input.preview_matches.contains(&index) {
+                row = row.style(Style::default().fg(Color::Cyan));
+            }
+
+            row
         });
 
         let selected_row_style = Style::default().add_modifier(Modifier::REVERSED);
@@ -333,17 +472,36 @@ impl App {
     }
 
     fn render_status(&self, frame: &mut Frame, area: Rect) {
-        let paragraph =
-            ratatui::widgets::Paragraph::new(self.status_message.clone().unwrap_or_default())
-                .block(
-                    Block::bordered().merge_borders(ratatui::symbols::merge::MergeStrategy::Exact),
-                );
+        let status_text = if self.filter_input.is_active {
+            if let Some(errmsg) = &self.filter_input.compile_error {
+                format!(
+                    "Filter: {} | invalid glob: {}",
+                    self.filter_input.draft, errmsg
+                )
+            } else {
+                format!(
+                    "Filter: {} | {} match(es)",
+                    self.filter_input.draft,
+                    self.filter_input.preview_matches.len()
+                )
+            }
+        } else if let Some(feedback) = &self.status_feedback {
+            feedback.clone()
+        } else {
+            self.status_message.clone().unwrap_or_default()
+        };
+
+        let paragraph = ratatui::widgets::Paragraph::new(status_text)
+            .block(Block::bordered().merge_borders(ratatui::symbols::merge::MergeStrategy::Exact));
         frame.render_widget(paragraph, area);
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
-        let status_text =
-            "q: Quit | ↑/↓: Navigate | Space: Select/Deselect | Enter: Start Download";
+        let status_text = if self.filter_input.is_active {
+            "Filter mode | Type: Pattern | Backspace: Delete | Enter: Apply | Esc: Cancel"
+        } else {
+            "q: Quit | ↑/↓: Navigate | Space: Select | /: Filter | Enter: Start Download"
+        };
         let paragraph = ratatui::widgets::Paragraph::new(status_text)
             .style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_widget(paragraph, area);
@@ -406,6 +564,27 @@ impl App {
                 self.start_downloads(); // start next download
             }
         }
+    }
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .char_indices()
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn queue_state_from_attachment(state: &AttachmentState) -> filter::AttachmentQueueState {
+    match state {
+        AttachmentState::NotDownloaded => filter::AttachmentQueueState::NotDownloaded,
+        AttachmentState::Failed { errmsg: _ } => filter::AttachmentQueueState::Failed,
+        AttachmentState::Queued
+        | AttachmentState::Downloading {
+            downloaded: _,
+            total: _,
+        }
+        | AttachmentState::Downloaded => filter::AttachmentQueueState::Other,
     }
 }
 

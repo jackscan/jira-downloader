@@ -7,6 +7,7 @@ use directories::ProjectDirs;
 use tracing::{debug, info};
 
 mod app;
+mod filter;
 mod jira;
 
 #[derive(Parser, Debug)]
@@ -72,13 +73,19 @@ async fn main() -> Result<()> {
 
     // Determine authentication method
     let (authdesc, authmethod) = match (&settings.user, &settings.token) {
-        (Some(user), token) => (format!("Basic: {}", user), jira::Auth::Basic {
-            username: user.clone(),
-            password: token.clone(),
-        }),
-        (None, Some(token)) => ("Bearer token".to_string(), jira::Auth::Bearer {
-            token: token.clone(),
-        }),
+        (Some(user), token) => (
+            format!("Basic: {}", user),
+            jira::Auth::Basic {
+                username: user.clone(),
+                password: token.clone(),
+            },
+        ),
+        (None, Some(token)) => (
+            "Bearer token".to_string(),
+            jira::Auth::Bearer {
+                token: token.clone(),
+            },
+        ),
         (None, None) => ("Anonymous access".to_string(), jira::Auth::None),
     };
 

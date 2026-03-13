@@ -6,8 +6,30 @@ A terminal-based TUI application for downloading attachments from Jira issues.
 
 - **Interactive TUI** - Browse and manage attachments with a keyboard-driven interface
 - **Batch Downloads** - Queue multiple attachments for sequential download
+- **Pattern Filter Queueing** - Queue matching attachments using glob or substring filters
 - **Secure Authentication** - Token-based authentication with Jira
 - **Configurable** - Load settings from config files or environment variables
+
+## Attachment Filter Workflow
+
+When viewing issue attachments in the TUI:
+
+- Press `/` to open filter mode.
+- Type either a glob pattern (for example `*.log`) or a plain substring
+  (for example `report`).
+- Press `Enter` to queue all eligible matches.
+- Press `Esc` to cancel filter mode with no state changes.
+
+Matching behavior:
+
+- Glob mode is used when the pattern contains `*` or `?`.
+- Substring mode is used when no wildcard is present.
+- Matching is case-insensitive in both modes.
+
+Status area feedback:
+
+- No-match case: `No eligible attachments matched '<pattern>'`
+- Invalid glob: shows a concise error and keeps attachment states unchanged
 
 ## Configuration
 
