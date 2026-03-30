@@ -32,6 +32,7 @@ pub struct App {
 struct DownloadCtrl {
     attachment_index: usize,
     progress_rx: watch::Receiver<jira::DownloadEvent>,
+    start_time: std::time::Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -312,19 +313,60 @@ impl App {
                     att.filename
                 )),
                 AttachmentState::Downloading { downloaded, total } => {
+                    let timing = self
+                        .download_ctrl
+                        .as_ref()
+                        .filter(|ctrl| ctrl.attachment_index == i)
+                        .map(|ctrl| {
+                            let elapsed = ctrl.start_time.elapsed().as_secs_f64();
+                            let speed = if elapsed >= 0.5 {
+                                Some(*downloaded as f64 / elapsed)
+                            } else {
+                                None
+                            };
+                            (elapsed, speed)
+                        });
+
                     if let Some(total) = total {
-                        Some(format!(
+                        let base = format!(
                             "Downloading '{}'... {}/{}",
                             att.filename,
                             format_file_size(*downloaded),
                             format_file_size(*total)
-                        ))
+                        );
+                        Some(match timing {
+                            Some((elapsed, Some(speed))) if speed > 0.0 => {
+                                let eta = (*total - *downloaded) as f64 / speed;
+                                format!(
+                                    "{} @ {} ({} elapsed, ~{} remaining)",
+                                    base,
+                                    format_speed(speed),
+                                    format_duration(elapsed),
+                                    format_duration(eta)
+                                )
+                            }
+                            Some((elapsed, _)) => {
+                                format!("{} ({} elapsed)", base, format_duration(elapsed))
+                            }
+                            None => base,
+                        })
                     } else {
-                        Some(format!(
+                        let base = format!(
                             "Downloading '{}'... {} downloaded",
                             att.filename,
                             format_file_size(*downloaded)
-                        ))
+                        );
+                        Some(match timing {
+                            Some((elapsed, Some(speed))) => {
+                                format!(
+                                    "{} @ {} ({} elapsed)",
+                                    base,
+                                    format_speed(speed),
+                                    format_duration(elapsed)
+                                )
+                            }
+                            _ => base,
+                        })
                     }
                 }
                 AttachmentState::Downloaded => Some(format!(
@@ -537,6 +579,7 @@ impl App {
             self.download_ctrl = Some(DownloadCtrl {
                 attachment_index: i,
                 progress_rx: rx,
+                start_time: std::time::Instant::now(),
             });
         };
     }
@@ -690,5 +733,33 @@ pub fn format_file_size(size: u64) -> String {
         format!("{} {}", size as u64, UNITS[unit_idx])
     } else {
         format!("{:.2} {}", size, UNITS[unit_idx])
+    }
+}
+
+fn format_speed(bytes_per_sec: f64) -> String {
+    const UNITS: &[&str] = &["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
+    let mut val = bytes_per_sec;
+    let mut unit_idx = 0;
+
+    while val >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        val /= 1024.0;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 {
+        format!("{} {}", val as u64, UNITS[unit_idx])
+    } else {
+        format!("{:.2} {}", val, UNITS[unit_idx])
+    }
+}
+
+fn format_duration(secs: f64) -> String {
+    let secs = secs as u64;
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
     }
 }
