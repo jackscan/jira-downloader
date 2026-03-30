@@ -76,7 +76,7 @@ impl App {
 
         let max_size_width = attachments
             .iter()
-            .map(|att| format_file_size(att.size).width())
+            .map(|att| format_file_size(att.size as u64).width())
             .max()
             .unwrap_or(0);
 
@@ -314,13 +314,16 @@ impl App {
                 AttachmentState::Downloading { downloaded, total } => {
                     if let Some(total) = total {
                         Some(format!(
-                            "Downloading '{}'... {}/{} bytes",
-                            att.filename, downloaded, total
+                            "Downloading '{}'... {}/{}",
+                            att.filename,
+                            format_file_size(*downloaded),
+                            format_file_size(*total)
                         ))
                     } else {
                         Some(format!(
-                            "Downloading '{}'... {} bytes downloaded",
-                            att.filename, downloaded
+                            "Downloading '{}'... {} downloaded",
+                            att.filename,
+                            format_file_size(*downloaded)
                         ))
                     }
                 }
@@ -433,7 +436,7 @@ impl App {
             let mut row = ratatui::widgets::Row::new(vec![
                 ratatui::text::Line::from(att.state.to_string()).right_aligned(),
                 att.filename.clone().into(),
-                format_file_size(att.size).into(),
+                format_file_size(att.size as u64).into(),
                 att.created.clone().into(),
             ]);
 
@@ -673,7 +676,7 @@ impl std::fmt::Display for AttachmentState {
     }
 }
 
-pub fn format_file_size(size: usize) -> String {
+pub fn format_file_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     let mut size = size as f64;
     let mut unit_idx = 0;
