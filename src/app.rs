@@ -23,6 +23,7 @@ pub struct App {
     lengths: (usize, usize, usize, usize),
     exit: bool,
     download_ctrl: Option<DownloadCtrl>,
+    download_batch: Option<DownloadBatch>,
     status_message: Option<String>,
     status_feedback: Option<String>,
     filter_input: filter::FilterInputState,
@@ -32,6 +33,12 @@ pub struct App {
 struct DownloadCtrl {
     attachment_index: usize,
     progress_rx: watch::Receiver<jira::DownloadEvent>,
+}
+
+#[derive(Debug)]
+struct DownloadBatch {
+    completed_files: usize,
+    completed_bytes: u64,
     start_time: std::time::Instant,
 }
 
@@ -103,6 +110,7 @@ impl App {
             lengths,
             exit: false,
             download_ctrl: None,
+            download_batch: None,
             status_message: None,
             status_feedback: None,
             filter_input: filter::FilterInputState::default(),
@@ -313,60 +321,19 @@ impl App {
                     att.filename
                 )),
                 AttachmentState::Downloading { downloaded, total } => {
-                    let timing = self
-                        .download_ctrl
-                        .as_ref()
-                        .filter(|ctrl| ctrl.attachment_index == i)
-                        .map(|ctrl| {
-                            let elapsed = ctrl.start_time.elapsed().as_secs_f64();
-                            let speed = if elapsed >= 0.5 {
-                                Some(*downloaded as f64 / elapsed)
-                            } else {
-                                None
-                            };
-                            (elapsed, speed)
-                        });
-
                     if let Some(total) = total {
-                        let base = format!(
+                        Some(format!(
                             "Downloading '{}'... {}/{}",
                             att.filename,
                             format_file_size(*downloaded),
                             format_file_size(*total)
-                        );
-                        Some(match timing {
-                            Some((elapsed, Some(speed))) if speed > 0.0 => {
-                                let eta = (*total - *downloaded) as f64 / speed;
-                                format!(
-                                    "{} @ {} ({} elapsed, ~{} remaining)",
-                                    base,
-                                    format_speed(speed),
-                                    format_duration(elapsed),
-                                    format_duration(eta)
-                                )
-                            }
-                            Some((elapsed, _)) => {
-                                format!("{} ({} elapsed)", base, format_duration(elapsed))
-                            }
-                            None => base,
-                        })
+                        ))
                     } else {
-                        let base = format!(
+                        Some(format!(
                             "Downloading '{}'... {} downloaded",
                             att.filename,
                             format_file_size(*downloaded)
-                        );
-                        Some(match timing {
-                            Some((elapsed, Some(speed))) => {
-                                format!(
-                                    "{} @ {} ({} elapsed)",
-                                    base,
-                                    format_speed(speed),
-                                    format_duration(elapsed)
-                                )
-                            }
-                            _ => base,
-                        })
+                        ))
                     }
                 }
                 AttachmentState::Downloaded => Some(format!(
@@ -461,15 +428,32 @@ impl App {
             ratatui::layout::Layout::vertical([Constraint::Fill(1), Constraint::Max(1)])
                 .split(frame.area());
 
-        let layout = ratatui::layout::Layout::vertical([
-            Constraint::Max(self.attachments.len() as u16 + 5),
-            Constraint::Fill(1),
-        ])
-        .spacing(ratatui::layout::Spacing::Overlap(1))
-        .split(toplayout[0]);
+        let show_batch = self.download_batch.is_some();
+
+        let constraints: Vec<Constraint> = if show_batch {
+            vec![
+                Constraint::Max(self.attachments.len() as u16 + 5),
+                Constraint::Max(3),
+                Constraint::Fill(1),
+            ]
+        } else {
+            vec![
+                Constraint::Max(self.attachments.len() as u16 + 5),
+                Constraint::Fill(1),
+            ]
+        };
+
+        let layout = ratatui::layout::Layout::vertical(constraints)
+            .spacing(ratatui::layout::Spacing::Overlap(1))
+            .split(toplayout[0]);
 
         self.render_table(frame, layout[0]);
-        self.render_status(frame, layout[1]);
+        if show_batch {
+            self.render_download_progress(frame, layout[1]);
+            self.render_status(frame, layout[2]);
+        } else {
+            self.render_status(frame, layout[1]);
+        }
         self.render_help(frame, toplayout[1]);
     }
 
@@ -552,6 +536,104 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
+    fn render_download_progress(&self, frame: &mut Frame, area: Rect) {
+        let Some(batch) = &self.download_batch else {
+            return;
+        };
+
+        // Count queued files and sum their sizes.
+        let queued_files = self
+            .attachments
+            .iter()
+            .filter(|a| a.state == AttachmentState::Queued)
+            .count();
+        let queued_bytes: u64 = self
+            .attachments
+            .iter()
+            .filter(|a| a.state == AttachmentState::Queued)
+            .map(|a| a.size as u64)
+            .sum();
+
+        // Current file progress.
+        let (current_downloaded, current_total) = self
+            .download_ctrl
+            .as_ref()
+            .and_then(|ctrl| {
+                let att = &self.attachments[ctrl.attachment_index];
+                if let AttachmentState::Downloading { downloaded, total } = &att.state {
+                    Some((*downloaded, *total))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((0, None));
+
+        let is_downloading = self.download_ctrl.is_some();
+        let total_files =
+            batch.completed_files + queued_files + if is_downloading { 1 } else { 0 };
+        let current_file_num = batch.completed_files + if is_downloading { 1 } else { 0 };
+
+        let total_bytes = batch.completed_bytes
+            + queued_bytes
+            + current_total.unwrap_or_else(|| {
+                self.download_ctrl
+                    .as_ref()
+                    .map(|ctrl| self.attachments[ctrl.attachment_index].size as u64)
+                    .unwrap_or(0)
+            });
+        let transferred = batch.completed_bytes + current_downloaded;
+
+        let elapsed = batch.start_time.elapsed().as_secs_f64();
+        let speed = if elapsed >= 0.5 && transferred > 0 {
+            Some(transferred as f64 / elapsed)
+        } else {
+            None
+        };
+
+        let text = if total_bytes > 0 {
+            let base = format!(
+                "File {}/{} | {} / {}",
+                current_file_num,
+                total_files,
+                format_file_size(transferred),
+                format_file_size(total_bytes),
+            );
+            match speed {
+                Some(s) if s > 0.0 => {
+                    let remaining = total_bytes.saturating_sub(transferred);
+                    let eta = remaining as f64 / s;
+                    format!(
+                        "{} @ {} (~{} remaining)",
+                        base,
+                        format_speed(s),
+                        format_duration(eta)
+                    )
+                }
+                _ => base,
+            }
+        } else {
+            let base = format!(
+                "File {}/{} | {} downloaded",
+                current_file_num,
+                total_files,
+                format_file_size(transferred),
+            );
+            match speed {
+                Some(s) => format!(
+                    "{} @ {} ({} elapsed)",
+                    base,
+                    format_speed(s),
+                    format_duration(elapsed)
+                ),
+                None => base,
+            }
+        };
+
+        let paragraph = ratatui::widgets::Paragraph::new(text)
+            .block(Block::bordered().merge_borders(ratatui::symbols::merge::MergeStrategy::Exact));
+        frame.render_widget(paragraph, area);
+    }
+
     fn start_downloads(&mut self) {
         if self.download_ctrl.is_some() {
             // download already in progress
@@ -564,6 +646,15 @@ impl App {
             .enumerate()
             .find(|(_, a)| a.state == AttachmentState::Queued)
         {
+            // Create a new batch if one isn't already running.
+            if self.download_batch.is_none() {
+                self.download_batch = Some(DownloadBatch {
+                    completed_files: 0,
+                    completed_bytes: 0,
+                    start_time: std::time::Instant::now(),
+                });
+            }
+
             let j = self.jira.clone();
             let url = a.content.clone();
             let file_path = self.folder.join(&a.filename);
@@ -579,9 +670,11 @@ impl App {
             self.download_ctrl = Some(DownloadCtrl {
                 attachment_index: i,
                 progress_rx: rx,
-                start_time: std::time::Instant::now(),
             });
-        };
+        } else {
+            // No more queued files — batch is done.
+            self.download_batch = None;
+        }
     }
 
     fn update_download(&mut self, index: usize, evt: jira::DownloadEvent) {
@@ -599,13 +692,23 @@ impl App {
             }
             jira::DownloadEvent::Finished => {
                 info!("Download finished for {}", att.filename);
+                let size = att.size as u64;
                 att.state = AttachmentState::Downloaded;
+                if let Some(batch) = &mut self.download_batch {
+                    batch.completed_files += 1;
+                    batch.completed_bytes += size;
+                }
                 self.download_ctrl = None;
                 self.start_downloads(); // start next download
             }
             jira::DownloadEvent::Error { msg } => {
                 error!("Download error for {}: {}", att.filename, msg);
+                let size = att.size as u64;
                 att.state = AttachmentState::Failed { errmsg: msg };
+                if let Some(batch) = &mut self.download_batch {
+                    batch.completed_files += 1;
+                    batch.completed_bytes += size;
+                }
                 self.download_ctrl = None;
                 self.start_downloads(); // start next download
             }
