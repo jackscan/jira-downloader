@@ -65,18 +65,29 @@ pub enum DownloadEvent {
 }
 
 impl Jira {
-    /// Creates a new Jira client.
+    /// Creates a new Jira client with a custom `reqwest::Client`.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the Jira instance (e.g., `https://jira.example.com`)
+    /// * `auth` - The authentication method to use for API requests
+    /// * `client` - The HTTP client to use for requests
+    pub fn with_client(base_url: String, auth: Auth, client: Client) -> Self {
+        Self {
+            client,
+            base_url,
+            auth,
+        }
+    }
+
+    /// Creates a new Jira client with default settings.
     ///
     /// # Arguments
     ///
     /// * `base_url` - The base URL of the Jira instance (e.g., `https://jira.example.com`)
     /// * `auth` - The authentication method to use for API requests
     pub fn new(base_url: String, auth: Auth) -> Self {
-        Self {
-            client: Client::new(),
-            base_url,
-            auth,
-        }
+        Self::with_client(base_url, auth, Client::new())
     }
 
     fn request(&self, url: impl IntoUrl) -> reqwest::RequestBuilder {
@@ -164,6 +175,7 @@ impl Jira {
                             total,
                         });
                     } else {
+                        file.flush().await?;
                         let _ = tx.send(DownloadEvent::Finished);
                         break Ok(())
                     }

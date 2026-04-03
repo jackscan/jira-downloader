@@ -8,7 +8,7 @@ use tracing::{debug, info};
 
 mod app;
 mod filter;
-mod jira;
+pub mod jira;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

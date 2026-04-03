@@ -741,12 +741,29 @@ async fn create_tmp_download_file(
     file_path: &PathBuf,
 ) -> anyhow::Result<(tokio::fs::File, PathBuf)> {
     let mut tmp_file_path = file_path.clone();
+    let mut counter = 0;
     loop {
-        tmp_file_path.add_extension("part");
+        if counter == 0 {
+            let mut name = file_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("download")
+                .to_string();
+            name.push_str(".part");
+            tmp_file_path.set_file_name(&name);
+        } else {
+            let mut name = file_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("download")
+                .to_string();
+            name.push_str(&format!(".part.{}", counter));
+            tmp_file_path.set_file_name(&name);
+        }
         match tokio::fs::File::create_new(&tmp_file_path).await {
             Ok(file) => break Ok((file, tmp_file_path)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // try again with a new name
+                counter += 1;
                 continue;
             }
             Err(e) => {
