@@ -14,7 +14,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting mock Jira server on ${MOCK_BASE_URL}..."
-cargo run --quiet --bin mock-server &
+cargo run --quiet --features mock-server --bin mock-server &
 MOCK_PID=$!
 
 echo "Waiting for mock server to be ready..."
