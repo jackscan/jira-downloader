@@ -1,19 +1,23 @@
 use axum::{
+    body::Bytes,
     extract::Path,
     http::{HeaderValue, StatusCode},
     response::Response,
     routing::get,
     Router,
 };
+use futures::stream;
+use std::time::Duration;
 
 const PORT: u16 = 8080;
+const CHUNK_SIZE: usize = 64 * 1024; // 64 KB per chunk
+const CHUNK_DELAY: Duration = Duration::from_millis(100); // 100 ms between chunks
 
 struct AttachmentInfo {
     id: usize,
     filename: String,
     size: usize,
     created: String,
-    content: Vec<u8>,
 }
 
 fn sample_attachments() -> Vec<AttachmentInfo> {
@@ -21,23 +25,20 @@ fn sample_attachments() -> Vec<AttachmentInfo> {
         AttachmentInfo {
             id: 10001,
             filename: "report.pdf".to_string(),
-            size: 10_240,
+            size: 2 * 1024 * 1024, // 2 MB
             created: "2024-01-15T10:30:00.000+0000".to_string(),
-            content: generate_content(10_240),
         },
         AttachmentInfo {
             id: 10002,
             filename: "screenshot.png".to_string(),
-            size: 51_200,
+            size: 5 * 1024 * 1024, // 5 MB
             created: "2024-01-16T14:20:00.000+0000".to_string(),
-            content: generate_content(51_200),
         },
         AttachmentInfo {
             id: 10003,
             filename: "notes.txt".to_string(),
-            size: 1_024,
+            size: 512 * 1024, // 512 KB
             created: "2024-01-17T09:00:00.000+0000".to_string(),
-            content: generate_content(1_024),
         },
     ]
 }
@@ -70,27 +71,41 @@ async fn get_issue() -> (StatusCode, axum::Json<serde_json::Value>) {
     (StatusCode::OK, axum::Json(build_issue_json()))
 }
 
-async fn get_attachment(
-    Path((id, filename)): Path<(usize, String)>,
-) -> Response {
+async fn get_attachment(Path((id, filename)): Path<(usize, String)>) -> Response {
     let attachments = sample_attachments();
 
-    if let Some(att) = attachments.iter().find(|a| a.id == id && a.filename == filename) {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                "Content-Disposition",
-                HeaderValue::from_str(&format!("attachment; filename=\"{}\"", att.filename))
-                    .unwrap(),
-            )
-            .body(axum::body::Body::from(att.content.clone()))
-            .unwrap()
-    } else {
-        Response::builder()
+    let Some(att) = attachments.iter().find(|a| a.id == id && a.filename == filename) else {
+        return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(axum::body::Body::from("Attachment not found"))
-            .unwrap()
-    }
+            .unwrap();
+    };
+
+    let content = generate_content(att.size);
+    let total_size = content.len();
+
+    // Split content into fixed-size chunks and yield each with a delay,
+    // simulating a slow network connection so download progress is observable.
+    let chunks: Vec<Bytes> = content
+        .chunks(CHUNK_SIZE)
+        .map(|c| Bytes::copy_from_slice(c))
+        .collect();
+
+    let throttled = stream::unfold(chunks.into_iter(), |mut iter: std::vec::IntoIter<Bytes>| async move {
+        let chunk = iter.next()?;
+        tokio::time::sleep(CHUNK_DELAY).await;
+        Some((Ok::<Bytes, std::convert::Infallible>(chunk), iter))
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            "Content-Disposition",
+            HeaderValue::from_str(&format!("attachment; filename=\"{}\"", att.filename)).unwrap(),
+        )
+        .header("Content-Length", total_size.to_string())
+        .body(axum::body::Body::from_stream(throttled))
+        .unwrap()
 }
 
 async fn health() -> &'static str {
@@ -108,7 +123,10 @@ async fn main() {
     }
     println!();
     println!("Run the downloader with:");
-    println!("  JIRA_BASE_URL=http://127.0.0.1:{} cargo run -- PROJ-123", PORT);
+    println!(
+        "  JIRA_BASE_URL=http://127.0.0.1:{} cargo run -- PROJ-123",
+        PORT
+    );
 
     let app = Router::new()
         .route("/health", get(health))
